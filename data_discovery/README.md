@@ -20,6 +20,14 @@ uv sync                       # creates .venv with all dependencies
 uv run jupyter lab            # open the notebook
 ```
 
+To run the notebook in VS Code / Cursor / another Jupyter front end, register the venv as a kernel once:
+
+```bash
+uv run python -m ipykernel install --user --name solar-data-discovery --display-name "Python (solar data_discovery)"
+```
+
+Then pick **Python (solar data_discovery)** as the kernel. In VS Code you can also choose the interpreter `data_discovery/.venv/bin/python`. Run with the working directory set to `data_discovery/` (the default when the notebook is opened from there), because the notebook uses relative paths (`src/`, `data/raw/`).
+
 Re-run the notebook headless:
 
 ```bash
