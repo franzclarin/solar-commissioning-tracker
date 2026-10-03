@@ -1,0 +1,7 @@
+# Raw EIA workbooks (large; re-download from EIA)
+data_discovery/data/raw/
+
+# Python / Jupyter
+.venv/
+__pycache__/
+.ipynb_checkpoints/
