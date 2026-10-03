@@ -8,7 +8,7 @@ Exploratory analysis of EIA-860M monthly generator inventories, the raw material
 data_discovery/
   pyproject.toml              # uv environment (pandas, openpyxl, matplotlib, seaborn, jupyterlab)
   src/load_eia860m.py         # loader: one workbook -> cleaned DataFrames per sheet
-  01_eda_august_2026.ipynb    # first-pass EDA of the August 2026 snapshot
+  EDA.ipynb                   # first-pass EDA of the August 2026 snapshot
   data/raw/                   # EIA workbooks (gitignored; download yourself)
 ```
 
@@ -23,7 +23,7 @@ uv run jupyter lab            # open the notebook
 Re-run the notebook headless:
 
 ```bash
-uv run jupyter nbconvert --to notebook --execute --inplace 01_eda_august_2026.ipynb
+uv run jupyter nbconvert --to notebook --execute --inplace EDA.ipynb
 ```
 
 ## Getting the data

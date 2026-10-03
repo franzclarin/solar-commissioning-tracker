@@ -5,3 +5,6 @@ data_discovery/data/raw/
 .venv/
 __pycache__/
 .ipynb_checkpoints/
+
+# macOS
+.DS_Store
