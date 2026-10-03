@@ -1,9 +1,10 @@
 """Loader for EIA-860M monthly generator inventory workbooks.
 
 Each workbook has one sheet per inventory (Operating, Planned, Retired,
-Canceled or Postponed, plus Puerto Rico variants). Every sheet has a title in
-row 0 ("Inventory of ... as of August 2026"), headers in row 2, and a blank row
-plus a long NOTES row at the bottom.
+Canceled [or Postponed], plus Puerto Rico variants from 2018). Every sheet has a
+title in row 0 ("Inventory of ... as of August 2026"), a header row (row 1 in
+early files, row 2 later), and footer NOTES rows. Column names drift over the
+years; COLUMN_ALIASES maps old names onto the current ones.
 """
 
 from __future__ import annotations
@@ -27,44 +28,89 @@ PLANNED_STATUS_LABELS = {
     "TS": "Construction complete, not in operation",
 }
 
-_TITLE_RE = re.compile(r"as of (\w+ \d{4})")
+# snake_cased historical column name -> current snake_cased name
+COLUMN_ALIASES = {
+    "sector_name": "sector",
+    "nameplate_capacity_mw_": "nameplate_capacity_mw",
+    "net_summer_capacity_mw_": "net_summer_capacity_mw",
+    "net_winter_capacity_mw_": "net_winter_capacity_mw",
+    "status_code": "status",
+}
+
+_TITLE_RE = re.compile(r"as of (\w+)\s+(\d{4})")
+READ_KW = {"engine": "calamine"}
 
 
 def _snake(name: str) -> str:
-    name = re.sub(r"\(([^)]*)\)", r"\1", name)  # "Capacity (MW)" -> "Capacity MW"
+    name = re.sub(r"\(([^)]*)\)", r"\1", str(name))  # "Capacity (MW)" -> "Capacity MW"
     return re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower()
+
+
+def resolve_sheet(available: list[str], canonical: str) -> str | None:
+    """Find the workbook's sheet for a canonical name ('Canceled' in 2015 files, etc.)."""
+    if canonical in available:
+        return canonical
+    if canonical.startswith("Canceled"):
+        return next((s for s in available if s.lower().startswith("cancel")), None)
+    return next((s for s in available if s.strip().lower() == canonical.lower()), None)
+
+
+def _parse_title(title: str) -> pd.Timestamp:
+    match = _TITLE_RE.search(str(title))
+    if not match:
+        raise ValueError(f"Could not parse inventory month from title: {title!r}")
+    return pd.to_datetime(f"{match.group(1)} {match.group(2)}", format="%B %Y")
 
 
 def inventory_month(path: str | Path, sheet: str = "Planned") -> pd.Timestamp:
     """Parse the inventory month from a sheet's title row."""
-    title = pd.read_excel(path, sheet_name=sheet, header=None, nrows=1).iat[0, 0]
-    match = _TITLE_RE.search(str(title))
-    if not match:
-        raise ValueError(f"Could not parse inventory month from title: {title!r}")
-    return pd.to_datetime(match.group(1), format="%B %Y")
+    title = pd.read_excel(path, sheet_name=sheet, header=None, nrows=1, **READ_KW).iat[0, 0]
+    return _parse_title(title)
 
 
 def _month_date(year: pd.Series, month: pd.Series) -> pd.Series:
-    parts = pd.DataFrame({"year": year, "month": month, "day": 1})
+    parts = pd.DataFrame({
+        "year": pd.to_numeric(year, errors="coerce"),
+        "month": pd.to_numeric(month, errors="coerce"),
+        "day": 1,
+    })
     return pd.to_datetime(parts, errors="coerce")
 
 
-def read_sheet(path: str | Path, sheet: str, inv_month: pd.Timestamp | None = None) -> pd.DataFrame:
+def _frame_from_raw(raw: pd.DataFrame) -> pd.DataFrame:
+    """Locate the header row (the one containing 'Plant ID') and build the table."""
+    head = raw.head(10).astype(str).apply(lambda r: r.str.strip())
+    hdr = next(i for i in range(len(head)) if (head.iloc[i] == "Plant ID").any())
+    df = raw.iloc[hdr + 1:].copy()
+    df.columns = [_snake(c) for c in raw.iloc[hdr]]
+    df = df.loc[:, [c for c in df.columns if c and c != "nan"]]
+    return df.rename(columns=COLUMN_ALIASES)
+
+
+def read_sheet(path: str | Path, sheet: str, inv_month: pd.Timestamp | None = None,
+               canonical: str | None = None) -> pd.DataFrame:
     """Read one inventory sheet into a cleaned DataFrame.
 
-    - drops the footer (blank + NOTES rows)
-    - snake_cases column names and drops map-link columns
-    - builds planned_date / operating_date / planned_retirement_date
+    - finds the header row, drops footer rows (no numeric plant_id)
+    - snake_cases column names (with historical aliases) and drops map-link columns
+    - builds planned_date / operating_date / planned_retirement_date / retirement_date
     - splits status into status_code and status_label
-    - tags rows with inventory_month and sheet
+    - tags rows with inventory_month and the canonical sheet name
     """
-    df = pd.read_excel(path, sheet_name=sheet, header=2)
-    df = df.dropna(subset=["Plant ID"]).drop(columns=["Google Map", "Bing Map"], errors="ignore")
-    df.columns = [_snake(c) for c in df.columns]
+    raw = pd.read_excel(path, sheet_name=sheet, header=None, **READ_KW)
+    if inv_month is None:
+        inv_month = _parse_title(raw.iat[0, 0])
+    df = _frame_from_raw(raw).drop(columns=["google_map", "bing_map"], errors="ignore")
 
-    for col in ["entity_id", "plant_id"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    df["plant_id"] = pd.to_numeric(df["plant_id"], errors="coerce").astype("Int64")
+    df = df[df["plant_id"].notna()]
+    df["entity_id"] = pd.to_numeric(df["entity_id"], errors="coerce").astype("Int64")
     df["generator_id"] = df["generator_id"].astype(str).str.strip()
+    df["entity_name"] = df["entity_name"].astype(str).str.strip()
+
+    numeric = [c for c in df.columns if c.endswith(("_mw", "_mwh", "_year", "_month")) or c in ("latitude", "longitude")]
+    for c in numeric:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
     date_cols = {
         "planned_date": ("planned_operation_year", "planned_operation_month"),
@@ -77,17 +123,27 @@ def read_sheet(path: str | Path, sheet: str, inv_month: pd.Timestamp | None = No
             df[new] = _month_date(df[y], df[m])
 
     if "status" in df.columns:
-        codes = df["status"].astype(str).str.extract(r"^\((\w+)\)\s*(.*)$")
+        codes = df["status"].astype(str).str.strip().str.extract(r"^\(?(\w+)\)?\s*(.*)$")
         df["status_code"] = codes[0]
-        df["status_label"] = codes[1]
+        df["status_label"] = codes[1].replace("", pd.NA)
 
-    df["sheet"] = sheet
-    df["inventory_month"] = inv_month if inv_month is not None else inventory_month(path, sheet)
+    df["sheet"] = canonical or sheet
+    df["inventory_month"] = inv_month
     return df.reset_index(drop=True)
 
 
 def load_workbook(path: str | Path, include_pr: bool = False) -> dict[str, pd.DataFrame]:
-    """Load the main inventory sheets (optionally Puerto Rico too) keyed by sheet name."""
-    inv = inventory_month(path)
-    sheets = MAIN_SHEETS + (PR_SHEETS if include_pr else [])
-    return {s: read_sheet(path, s, inv) for s in sheets}
+    """Load the main inventory sheets (optionally Puerto Rico too) keyed by canonical sheet name.
+
+    Sheets missing from older files (e.g. Retired before 2017) are skipped.
+    """
+    available = pd.ExcelFile(path, **READ_KW).sheet_names
+    out = {}
+    inv = None
+    for canonical in MAIN_SHEETS + (PR_SHEETS if include_pr else []):
+        actual = resolve_sheet(available, canonical)
+        if actual is None:
+            continue
+        out[canonical] = read_sheet(path, actual, inv, canonical)
+        inv = out[canonical]["inventory_month"].iloc[0]
+    return out

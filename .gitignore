@@ -1,5 +1,6 @@
-# Raw EIA workbooks (large; re-download from EIA)
+# EIA workbooks and derived tables (large; re-download / rebuild with data_discovery/src scripts)
 data_discovery/data/raw/
+data_discovery/data/processed/
 
 # Python / Jupyter
 .venv/
